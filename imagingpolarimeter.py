@@ -25,13 +25,13 @@ __author__ = "Serhiy Kobyakov"
 __authors__ = ["Serhiy Kobyakov"]
 __copyright__ = "Copyright 2022, Serhiy Kobyakov"
 __credits__ = ["Yaroslav Shopa"]
-__date__ = "2022/03/12"
+__date__ = "2022/23/07"
 __deprecated__ = False
 __email__ =  "skobyakov@uksw.edu.pl"
 __license__ = "MIT"
 __maintainer__ = "Serhiy Kobyakov"
 __status__ = "Production"
-__version__ = "0.0.1"
+__version__ = "2022.07.23"
 
 
 
