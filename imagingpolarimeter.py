@@ -679,3 +679,4 @@ def _showp(dx, dy):
     plt.show
     #plt.savefig("test.png")
     #plt.close()
+
