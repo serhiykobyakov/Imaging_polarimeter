@@ -6,7 +6,6 @@ Institute of Physical Sciences
 
 """
 
-
 from cmath import nan, pi
 from genericpath import isdir, isfile
 import sys
@@ -22,6 +21,7 @@ import scipy as sp
 from scipy import ndimage
 import subprocess
 from matplotlib import pyplot as plt
+import multiprocessing
 
 from scipy.optimize import leastsq
 #from scipy.optimize import least_squares
@@ -33,12 +33,12 @@ __author__ = "Serhiy Kobyakov"
 __authors__ = ["Serhiy Kobyakov"]
 __copyright__ = "Copyright 2022, Serhiy Kobyakov"
 __credits__ = ["Yaroslav Shopa"]
-__date__ = "2022.08.10"
+__date__ = "2022.08.21"
 __deprecated__ = False
 __license__ = "MIT"
 __maintainer__ = "Serhiy Kobyakov"
 __status__ = "Production"
-__version__ = "2022.08.10"
+__version__ = "2022.08.21"
 
 
 
@@ -77,7 +77,12 @@ class imagingpolarimeter:
 
 
     def __init__(self, somePath) -> None:
+        # get the directiry the program have been started        
         self.dataDir = os.getcwd()
+
+        # get number of threads on this machine
+        self.NThreads = multiprocessing.cpu_count()
+
         if len(somePath) == 0 and os.path.isfile(self.varFName):
             print(self.varFName + " has not been mentioned but we found it!")
             somePath = os.path.join(os.getcwd(), self.varFName)
@@ -102,8 +107,27 @@ class imagingpolarimeter:
                 print("No " + self.xarrayFName + " file found in " + self.dataDir + "\nAbort!")
                 sys.exit()
             self._getVariables()
-            self._unpackRAW('raw_background_images')
-            self._unpackRAW('raw_images')
+
+            filesList=glob.glob(os.path.join(self.dataDir, 'raw_background_images', '') + "*." + self.raw_extension)
+            if len(filesList) > 0:   # if there are raw files
+                filesList.sort(key=os.path.getmtime)
+                print("Converting RAW to tif in /" + 'raw_background_images' + ".", end='', flush=True)
+                pool = multiprocessing.Pool(self.NThreads)
+                pool.map(self._unpRAW, filesList)
+                pool.close()
+                pool.join()
+                print("done")  # unpacking raw files
+
+            filesList=glob.glob(os.path.join(self.dataDir, 'raw_images', '') + "*." + self.raw_extension)
+            if len(filesList) > 0:   # if there are raw files
+                filesList.sort(key=os.path.getmtime)
+                print("Converting RAW to tif in /" + 'raw_images' + ".", end='', flush=True)
+                pool = multiprocessing.Pool(self.NThreads)
+                pool.map(self._unpRAW, filesList)
+                pool.close()
+                pool.join()
+                print("done")  # unpacking raw files
+
             self._mkdark()
             self._maketheimages()
             self._findTheCenter()
@@ -246,22 +270,16 @@ class imagingpolarimeter:
         print("done") # reading camera variables
 
 
-
-    def _unpackRAW(self, intheDir):
-        filesList=glob.glob(os.path.join(self.dataDir, intheDir, '') + "*." + self.raw_extension)
-        if len(filesList) > 0:   # if there are raw files
-            filesList.sort(key=os.path.getmtime)
-            print("Converting RAW to tif in /" + intheDir + ".", end='', flush=True)
-            for j in range(len(filesList)):
-                cmd="/usr/bin/4channels -B " + str(filesList[j]) + " >/dev/null 2>&1"
-                os.system(cmd)
-                if os.path.isfile(filesList[j] + "." + self.var['theColor'] + ".tiff"):
-                    os.rename(filesList[j] + "." + self.var['theColor'] + ".tiff", filesList[j] + "." + self.var['theColor'] + ".tif")
-                    os.remove(filesList[j]) # remove the raw file
-                for f in glob.glob(os.path.join(intheDir, '') + "*.tiff"):
-                    os.remove(f)  # remove all .tiff files
-                print(".", end='', flush=True)          
-            print("done")  # unpacking raw files
+    def _unpRAW(self, fName):
+        # extract the image from RAW file
+        cmd="/usr/bin/4channels -B " + fName + " >/dev/null 2>&1"
+        os.system(cmd)
+        if os.path.isfile(fName + "." + self.var['theColor'] + ".tiff"):
+            os.rename(fName + "." + self.var['theColor'] + ".tiff", fName + "." + self.var['theColor'] + ".tif")
+            os.remove(fName) # remove the raw file
+        for f in glob.glob(fName + "*.tiff"):
+            os.remove(f)  # remove all .tiff files
+        print(".", end='', flush=True)
 
 
     def _mkdark(self):
@@ -459,228 +477,15 @@ class imagingpolarimeter:
             print("done")
 
 
-    def _polaroidsCharacterization(self):
-        # for testing purpouses
-        theTime = 0.
-        theCount = 0
-
-        print('Experiment type:', self.var['theMeasurementType'])
-        # max saturation level for image sensor
-        maxI = 800.0
-
-        # get list of files
-        filesList=glob.glob(os.path.join(self.dataDir, 'Images', '???_???.npy'))
-        filesList.sort(key=os.path.getmtime)
-
-        #check if number of files equals variables
-        if len(filesList) != self.var['NPSteps']*self.var['NASteps']:
-            print("EE Total number of images expected:", self.var['NPSteps']*self.var['NASteps'])
-            print("EE Images in the directory:", len(filesList))
-            print("Mismatch! Aborting...")
-            sys.exit()
-
-        # Load all images to memory
-        print("    Loading data..", end='', flush=True)
-        #allImgArr = np.array([np.array(Image.open(fname)) for fname in filesList])
-        allImgArr = np.array([np.load(fname) for fname in filesList])
-        print('.done')
-
-        n_z, n_y, n_x = allImgArr.shape   # get dimensions of the array
-        print("    Input array shape: " + str(n_x) + "x" + str(n_y) + ", images: " + str(n_z))
-
-        # Load calibrated values of x variable:
-        if os.path.isfile(self.xarrayFName):
-            xarray = np.loadtxt(self.xarrayFName)
-        else:
-            print('EE no APosCalibrated.dat file found! Uncalibrated data will be used instead')
-            xarray=np.arange(-(n_z-1)/2, (n_z-1)/2+1, 1)*self.AStepRad
-
-        # initialize arrays for variables
-        thedeg = np.zeros(shape=(n_y, n_x), dtype=np.float32)
-        extRatio = np.zeros(shape=(n_y, n_x), dtype=np.float32)
-        residuals = np.zeros(shape=(n_y, n_x), dtype=np.float32)
-        thedeg[:], extRatio[:], residuals[:] = np.nan, np.nan, np.nan
-        #a = np.zeros(shape=(n_y, n_x), dtype=np.float32)
-        #b = np.zeros(shape=(n_y, n_x), dtype=np.float32)
-        #c = np.zeros(shape=(n_y, n_x), dtype=np.float32)
-        a, b, c = np.empty(shape=(n_y, n_x), dtype=np.float32), np.empty(shape=(n_y, n_x), dtype=np.float32), np.empty(shape=(n_y, n_x), dtype=np.float32)
-        a[:], b[:], c[:] = np.nan, np.nan, np.nan
-        aguess, bguess, cguess = 0., 0., 0.
-
-        dataSize = str(round((allImgArr.nbytes * 8)/ 1024 / 1024,2))
-        print("    Data size in memory: " + dataSize + " Mb")
-
-        thesDir = os.path.join(self.dataDir, 'Images_smoothed')
-        if not os.path.isdir(thesDir):
-            cmd="mkdir " + thesDir + " >/dev/null 2>&1"
-            os.system(cmd)
-
-        # Blur images using gaussian filter        
-        if self.var['theSigma'] > 0:
-            print("    Blurring images with sigma=" + str(self.var['theSigma']) + "..", end='', flush=True)
-            for dz in range(n_z):
-                arr = sp.ndimage.filters.gaussian_filter(allImgArr[dz, :, :], self.var['theSigma'])
-                allImgArr[dz, :, :] = arr
-                np.save(os.path.join(thesDir, os.path.basename(filesList[dz])), arr)
-                print('.', end='', flush=True)
-            print('.done')
-
-        # parabola
-        def func(param, x):
-            #a, b, c = param
-            #return a * x ** 2 + b * x + c
-            return param[0] * x ** 2 + param[1] * x + param[2]
-
-        def dfunc(param, x, y):
-            return [x**2, x, np.ones(len(x))]
-
-        # The function to minimize
-        def theErrF(param, x, y):
-            return func(param, x) - y
-        
-
-
-        print("    Fitting parabolas..", end='', flush=True)
-        for dx in range(n_x):
-            # print dot to terminal for each 10th row, just to show that program is working
-            if dx % 10 == 0: print('.', end='', flush=True)
-            for dy in range(n_y):
-                """
-                extRatio[dy, dx] = nan
-                thedeg[dy, dx] = nan
-                residuals[dy, dx] = nan
-                a[dy, dx] = nan
-                b[dy, dx] = nan
-                c[dy, dx] = nan
-                """
-                # check if we out of the working area (circle)
-                if (dx - self.var['xcenter']) ** 2 + (dy - self.var['ycenter']) ** 2 < self.var['circlerad'] ** 2:
-                    # if we are in - fit parabolas!
-                    yarr=allImgArr[:, dy, dx]
-                    xarr=xarray.astype(np.float32)
-
-                    # discard some data which is too close to the sides of range
-                    for j in reversed(range(n_z)):
-                        index = j-(self.var['NASteps']-1)/2
-                        if abs(index*math.sin(index/2)) > (self.var['NASteps']-1)/10:
-                            yarr = np.delete(yarr, j)
-                            xarr = np.delete(xarr, j)                
-
-                    # remove data with high signal intensity
-                    arrsize = yarr.shape
-                    for j in reversed(range(arrsize[0])):
-                        if yarr[j] > maxI:
-                            yarr = np.delete(yarr, j)
-                            xarr = np.delete(xarr, j)
-
-                    # guessing the initial parameters
-                    theindex = np.argmin(yarr ** 2)
-                    thexmin = xarr[theindex]
-                    theymin = yarr[theindex]
-                    # estimation: c = y(x=0)
-                    guessc = yarr[np.argmin(xarr ** 2)]
-                    # estimation: a = (c - ymin)/xmin
-                    if thexmin == 0:
-                        guessa = (guessc - theymin) / 0.0000000001
-                        guessb = (theymin - guessa * 0.0000000001 **2 - guessc) / 0.0000000001
-                    else:
-                        guessa = (guessc - theymin) / thexmin
-                        guessb = (theymin - guessa * thexmin **2 - guessc) / thexmin
-
-                    # estimation: b = (somey - a * somex **2 - c) / somex
-                    
-                    """
-                    # testing:
-                    # print data and variables for 15th pixel
-                    if theCount == 15:
-                        np.savetxt('xarr.txt', xarr)
-                        np.savetxt('yarr.txt', yarr)
-                        print("\n")
-                        for k in range(xarr.size):
-                            print(k, xarr[k], yarr[k])
-                        print("theindex:", theindex)
-                        print("xmin:", thexmin, "ymin:", theymin)
-                        print("type xmin:", type(thexmin), "ymin:", type(theymin))
-                        print("type xarr:", type(xarr), "yarr:", type(yarr))
-                        print("Guess: a:", aguess[dy, dx], "b:", bguess[dy, dx], "c:", cguess[dy, dx])
-                    """
-                    # fit the data
-                    theStamp = time.time()
-
-                    # polyfit
-                    #a[dy, dx], b[dy, dx], c[dy, dx] = np.polyfit(xarr, yarr, 2)
-                    #if theCount == 15:
-                    #    print("Sol    a:", a[dy, dx], "b:", b[dy, dx], "c:", c[dy, dx])
-                    # -------------------------------------
-                    # One parabola fitting took 0.102739 ms
-                    # 132013 parabolas has been fitted
-
-                    
-                    # Least square
-                    p0 = [guessa, guessb, guessc]
-                    sol = leastsq(theErrF, p0, args=(xarr, yarr), Dfun=dfunc, col_deriv=1, ftol=0.5, xtol=0.5, maxfev=30)
-                    #sol = least_squares(theErrF, p0, args=(xarr, yarr), ftol=0.5, xtol=0.5)
-                    a[dy, dx], b[dy, dx], c[dy, dx] = sol[0]
-                    # -------------------------------------
-                    # One parabola fitting took 0.628297 ms
-                    # 132013 parabolas has been fitted
-                    # check:
-                    # https://lmfit.github.io/lmfit-py/fitting.html
-
-
-                    if a[dy, dx] == 0: a[dy, dx] = 0.0000000000001
-
-
-                    theTime = theTime + time.time() - theStamp
-                    theCount += 1
-
-                    # ... angle
-                    #thedeg[dy, dx] = -(360/(2*pi))*b[dy, dx]/(2*a[dy, dx])
-
-                    #extRatio[dy, dx] = (c[dy, dx]/a[dy, dx] - (b[dy, dx] / (2 * a[dy, dx])) ** 2) / 2
-
-                    # calculate variance per NASteps
-                    variance=0
-                    for x,y in zip(xarr, yarr):
-                        #theErrF(param, x, y)
-                        #variance = variance + (y - (a[dy, dx]*x**2 + b[dy, dx]*x + c[dy, dx])) ** 2
-                        variance = variance + (theErrF([a[dy, dx], b[dy, dx], c[dy, dx]], x, y)) ** 2
-                    if variance > 0:
-                        variance = math.sqrt(variance)/self.var['NASteps']
-                    else:
-                        variance=0
-                    residuals[dy, dx] = variance
-
-        # ... angle
-        thedeg = -(360/(2*pi))*b/(2*a)
-
-        # Extinction ratio
-        extRatio = (c/a - (b / (2 * a)) ** 2) / 2
-
-        # save the calculated images
-        np.save("min_angle", thedeg)
-        np.save("extRatio", extRatio)
-        np.save("variance", residuals)
-
-        np.save("a", a)
-        np.save("b", b)
-        np.save("c", c)
-
-        if self.write16bit:
-            im = Image.fromarray(np.uint16(np.around(extRatio)), mode='I;16')
-            im.save("16bit/extRatio.tiff", "TIFF")
-            im = Image.fromarray(np.uint16(np.around(thedeg)), mode='I;16')
-            im.save("16bit/min_angle.tiff", "TIFF")
-            im = Image.fromarray(np.uint16(np.around(residuals)), mode='I;16')
-            im.save("16bit/variance.tiff", "TIFF")
-
-        print("done")
-        print('One parabola fitting took {:.6f} ms'.format(theTime*1000/theCount))
-        print(str(theCount) + ' parabolas has been fitted')
+    def _blurImg(self, theNumpyImgFName):
+        # Blur numpy image using gaussian filter        
+        arr = sp.ndimage.filters.gaussian_filter(np.load(theNumpyImgFName), self.var['theSigma'])
+        np.save(os.path.join(os.path.join(self.dataDir, 'Images_smoothed', os.path.basename(theNumpyImgFName))), arr)
+        print('.', end='', flush=True)
 
 
     def _mkCharacterization(self):
-        # for testing purpouses
+        # process polaroids characterization
         theTime = 0.
         theCount = 0
 
@@ -692,18 +497,42 @@ class imagingpolarimeter:
         filesList=glob.glob(os.path.join(self.dataDir, 'Images', '???_???.npy'))
         filesList.sort(key=os.path.getmtime)
 
-        #check if number of files equals variables
+        # check if there are images in the Images dir
+        if len(filesList) == 0:
+            print("EE There are no images in the directory:", len(filesList))
+            print("Aborting...")
+            sys.exit()
+
+        # check if number of files equals variables
         if len(filesList) != self.var['NPSteps']*self.var['NASteps']:
             print("EE Total number of images expected:", self.var['NPSteps']*self.var['NASteps'])
             print("EE Images in the directory:", len(filesList))
             print("Mismatch! Aborting...")
             sys.exit()
-
-        # Load all images to memory
-        print("    Loading data..", end='', flush=True)
-        #allImgArr = np.array([np.array(Image.open(fname)) for fname in filesList])
-        allImgArr = np.array([np.load(fname) for fname in filesList])
-        print('.done')
+        
+        if self.var['theSigma'] > 0:
+            # Blur images using gaussian filter     
+            print("    Blurring images with sigma=" + str(self.var['theSigma']) + " ..", end='', flush=True)
+            pool = multiprocessing.Pool(self.NThreads)
+            pool.map(self._blurImg, filesList)
+            pool.close()
+            pool.join()
+            print("done")  # Blur images
+            # Load blurred images to memory
+            print("    Loading data..", end='', flush=True)
+            filesList=glob.glob(os.path.join(self.dataDir, 'Images_smoothed', '???_???.npy'))
+            filesList.sort(key=os.path.getmtime)
+            #allImgArr = np.array([np.array(Image.open(fname)) for fname in filesList])
+            allImgArr = np.array([np.load(fname) for fname in filesList])
+            print('.done')            
+        else:
+            # Load images to memory
+            print("    Loading data..", end='', flush=True)
+            filesList=glob.glob(os.path.join(self.dataDir, 'Images', '???_???.npy'))
+            filesList.sort(key=os.path.getmtime)
+            #allImgArr = np.array([np.array(Image.open(fname)) for fname in filesList])
+            allImgArr = np.array([np.load(fname) for fname in filesList])
+            print('.done')
 
         n_z, n_y, n_x = allImgArr.shape   # get dimensions of the array
         print("    Input array shape: " + str(n_x) + "x" + str(n_y) + ", images: " + str(n_z))
@@ -740,15 +569,6 @@ class imagingpolarimeter:
             cmd="mkdir " + thesDir + " >/dev/null 2>&1"
             os.system(cmd)
 
-        # Blur images using gaussian filter        
-        if self.var['theSigma'] > 0:
-            print("    Blurring images with sigma=" + str(self.var['theSigma']) + "..", end='', flush=True)
-            for dz in range(n_z):
-                arr = sp.ndimage.filters.gaussian_filter(allImgArr[dz, :, :], self.var['theSigma'])
-                allImgArr[dz, :, :] = arr
-                np.save(os.path.join(thesDir, os.path.basename(filesList[dz])), arr)
-                print('.', end='', flush=True)
-            print('.done')
         """
         # parabola
         def func(param, x):
@@ -776,7 +596,6 @@ class imagingpolarimeter:
             gb = (theymin - ga * thexmin **2 - gc) / thexmin
             return ga, gb, gc
         """
-
 
         print("    Fitting parabolas..", end='', flush=True)
         for dx in range(n_x):
