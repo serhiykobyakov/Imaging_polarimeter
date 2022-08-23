@@ -33,18 +33,18 @@ __author__ = "Serhiy Kobyakov"
 __authors__ = ["Serhiy Kobyakov"]
 __copyright__ = "Copyright 2022, Serhiy Kobyakov"
 __credits__ = ["Yaroslav Shopa"]
-__date__ = "2022.08.21"
+__date__ = "2022.08.23"
 __deprecated__ = False
 __license__ = "MIT"
 __maintainer__ = "Serhiy Kobyakov"
 __status__ = "Production"
-__version__ = "2022.08.21"
+__version__ = "2022.08.23"
 
 
 
 class imagingpolarimeter:
     # for testing purpouses:
-    decrRadius = 800
+    decrRadius = 40
 
     # create 16bit images project?
     # for testing purpouses, must be False after release
@@ -64,6 +64,9 @@ class imagingpolarimeter:
 
     # RAW files extention:
     raw_extension = 'CR2'
+
+    # max saturation level for image sensor
+    #maxI = 800.0
 
     # sigma value of gaussian filter for smoothing images
     # It is 1 for Canon EOS M3
@@ -147,6 +150,7 @@ class imagingpolarimeter:
 
     def makedata(self):
         if self.var['theMeasurementType'] == 'characterization':
+            self._blurAllImages()
             self._mkCharacterization()
 
 
@@ -478,61 +482,62 @@ class imagingpolarimeter:
 
 
     def _blurImg(self, theNumpyImgFName):
-        # Blur numpy image using gaussian filter        
+        # Blur single numpy image from Images/ using gaussian filter
+        # and put the result to Images_smoothed/
         arr = sp.ndimage.filters.gaussian_filter(np.load(theNumpyImgFName), self.var['theSigma'])
         np.save(os.path.join(os.path.join(self.dataDir, 'Images_smoothed', os.path.basename(theNumpyImgFName))), arr)
         print('.', end='', flush=True)
 
 
-    def _mkCharacterization(self):
-        # process polaroids characterization
-        theTime = 0.
-        theCount = 0
-
-        print('Experiment type:', self.var['theMeasurementType'])
-        # max saturation level for image sensor
-        maxI = 800.0
-
-        # get list of files
-        filesList=glob.glob(os.path.join(self.dataDir, 'Images', '???_???.npy'))
-        filesList.sort(key=os.path.getmtime)
-
-        # check if there are images in the Images dir
-        if len(filesList) == 0:
-            print("EE There are no images in the directory:", len(filesList))
-            print("Aborting...")
-            sys.exit()
-
-        # check if number of files equals variables
-        if len(filesList) != self.var['NPSteps']*self.var['NASteps']:
-            print("EE Total number of images expected:", self.var['NPSteps']*self.var['NASteps'])
-            print("EE Images in the directory:", len(filesList))
-            print("Mismatch! Aborting...")
-            sys.exit()
-        
+    def _blurAllImages(self):
+        # Blur all the images
         if self.var['theSigma'] > 0:
-            # Blur images using gaussian filter     
+            # get the list of files
+            filesList=glob.glob(os.path.join(self.dataDir, 'Images', '???_???.npy'))
+            filesList.sort(key=os.path.getmtime)
+
+            # check if there are images in the Images dir
+            if len(filesList) == 0:
+                print("EE There are no images in the directory:", len(filesList))
+                print("Aborting...")
+                sys.exit()
+
+            # check if number of files equals variables
+            if len(filesList) != self.var['NPSteps']*self.var['NASteps']:
+                print("EE Total number of images expected:", self.var['NPSteps']*self.var['NASteps'])
+                print("EE Images in the directory:", len(filesList))
+                print("Mismatch! Aborting...")
+                sys.exit()
+
+            # Blur images using gaussian filter
+            # make the directory for images if it does not exists
+            thesDir = os.path.join(self.dataDir, 'Images_smoothed')
+            if not os.path.isdir(thesDir):
+                cmd="mkdir " + thesDir + " >/dev/null 2>&1"
+                os.system(cmd)
+
             print("    Blurring images with sigma=" + str(self.var['theSigma']) + " ..", end='', flush=True)
             pool = multiprocessing.Pool(self.NThreads)
             pool.map(self._blurImg, filesList)
             pool.close()
             pool.join()
-            print("done")  # Blur images
-            # Load blurred images to memory
-            print("    Loading data..", end='', flush=True)
+            print("done")  # Blur images          
+
+
+    def _mkCharacterization(self):
+        # process polaroids characterization
+        theTime = 0.
+
+        print("    Loading data..", end='', flush=True)
+        if self.var['theSigma'] > 0:   # Load blurred images to memory             
             filesList=glob.glob(os.path.join(self.dataDir, 'Images_smoothed', '???_???.npy'))
-            filesList.sort(key=os.path.getmtime)
-            #allImgArr = np.array([np.array(Image.open(fname)) for fname in filesList])
-            allImgArr = np.array([np.load(fname) for fname in filesList])
-            print('.done')            
         else:
             # Load images to memory
-            print("    Loading data..", end='', flush=True)
             filesList=glob.glob(os.path.join(self.dataDir, 'Images', '???_???.npy'))
-            filesList.sort(key=os.path.getmtime)
-            #allImgArr = np.array([np.array(Image.open(fname)) for fname in filesList])
-            allImgArr = np.array([np.load(fname) for fname in filesList])
-            print('.done')
+
+        filesList.sort(key=os.path.getmtime)            
+        allImgArr = np.array([np.load(fname) for fname in filesList])
+        print('.done')
 
         n_z, n_y, n_x = allImgArr.shape   # get dimensions of the array
         print("    Input array shape: " + str(n_x) + "x" + str(n_y) + ", images: " + str(n_z))
@@ -543,8 +548,6 @@ class imagingpolarimeter:
         else:
             print('WW no APosCalibrated.dat file found! Uncalibrated data will be used instead')
             xarray=np.arange(-(n_z-1)/2, (n_z-1)/2+1, 1)*self.AStepRad
-        
-        allxarray = np.array
 
         # initialize arrays for variables
         thedeg = np.zeros(shape=(n_y, n_x), dtype=np.float32)
@@ -555,73 +558,45 @@ class imagingpolarimeter:
         b = np.empty(shape=(n_y, n_x), dtype=np.float32)
         c = np.empty(shape=(n_y, n_x), dtype=np.float32)
         a[:], b[:], c[:] = np.nan, np.nan, np.nan
-        # array for weights
-        wy = np.zeros(shape=(n_z), dtype=np.float32)
-        sol = np.zeros(shape=3, dtype=np.float32)
+        # Make array of weights
+        wyArray = np.zeros(shape=(n_z, n_y, n_x), dtype=np.float32)
+        # just to avoid zero division:
+        allImgArr[allImgArr == 0.] = 0.0000000000001
+        wyArray = 1 / np.absolute(allImgArr)
 
-        aguess, bguess, cguess = 0., 0., 0.
-
+        # Calculate how much memory taken by the data
+        # *********
         dataSize = str(round((allImgArr.nbytes * 8)/ 1024 / 1024,2))
         print("    Data size in memory: " + dataSize + " Mb")
 
-        thesDir = os.path.join(self.dataDir, 'Images_smoothed')
-        if not os.path.isdir(thesDir):
-            cmd="mkdir " + thesDir + " >/dev/null 2>&1"
-            os.system(cmd)
+        global fitd
+        def fitd(dy, dx):
+        # function which fits the single point of data
+            if (dx - self.var['xcenter']) ** 2 + (dy - self.var['ycenter']) ** 2 < self.var['circlerad'] ** 2:
+                sol = np.polyfit(xarray, allImgArr[:, dy, dx], 2, rcond=0.00001, full=True, w=wyArray[:, dy, dx])
+                return np.append(sol[0], sol[1][0])
+            else:
+                return np.nan, np.nan, np.nan, np.nan
 
-        """
-        # parabola
-        def func(param, x):
-            #a, b, c = param
-            #return a * x ** 2 + b * x + c
-            return param[0] * x ** 2 + param[1] * x + param[2]
+        print("    Fitting parabolas --- PLEASE WAIT UNTIL IT FINISH THE TASK  ---", end='', flush=True)
+        theStamp = time.time()
 
-        def dfunc(param, x, y):
-            return [x**2, x, np.ones(len(x))]
+        pool = multiprocessing.Pool(self.NThreads)
+        results = pool.starmap(fitd, ((dy, dx) for dy in range(n_y) for dx in range(n_x)))
+        pool.close()
+        pool.join()
 
-        # The function to minimize
-        def theErrF(param, x, y):
-            return func(param, x) - y
+        newarr = np.asarray(results, dtype=np.float32).reshape(n_y, n_x, 4)
+        a = newarr[:, :, 0]
+        b = newarr[:, :, 1]
+        c = newarr[:, :, 2]
+        residuals = newarr[:, :, 3]
 
-        def guessParam(xarr, yarr):
-            theindex = np.argmin(yarr ** 2)
-            thexmin = xarr[theindex]
-            if thexmin == 0:
-                thexmin = 0.0000000001
-            theymin = yarr[theindex]
-            # estimation: c = y(x=0)
-            gc = yarr[np.argmin(xarr ** 2)]
-            # estimation: a = (c - ymin)/xmin
-            ga = (gc - theymin) / thexmin
-            gb = (theymin - ga * thexmin **2 - gc) / thexmin
-            return ga, gb, gc
-        """
+        theTime = time.time() - theStamp
 
-        print("    Fitting parabolas..", end='', flush=True)
-        for dx in range(n_x):
-            # print dot to terminal for each 10th row, just to show that program is working
-            if dx % 10 == 0: print('.', end='', flush=True)
-            for dy in range(n_y):
-                # check if we out of the working area (circle)
-                if (dx - self.var['xcenter']) ** 2 + (dy - self.var['ycenter']) ** 2 < self.var['circlerad'] ** 2:
-                    # if we are in - fit parabolas!
-                    yarr=allImgArr[:, dy, dx]
-                    xarr=xarray.astype(np.float32)
-
-                    # calculate weights
-                    wy = 1 / np.absolute(yarr)
-
-                    # fit the data
-                    theStamp = time.time()
-                    sol = np.polyfit(xarr, yarr, 2, rcond=0.00001, full=True, w=wy)
-                    theTime = theTime + time.time() - theStamp
-                    theCount += 1
-
-                    a[dy, dx], b[dy, dx], c[dy, dx] = sol[0]
-                    residuals[dy, dx] = sol[1][0]
-
+        # --- parameters calculation ---
         # just to avoid zero division:
-        a[a == 0] = 0.0000000000001
+        a[a == 0.] = 0.0000000000001
 
         # ... angle
         thedeg = -(360/(2*pi))*b/(2*a)
@@ -633,7 +608,6 @@ class imagingpolarimeter:
         np.save("min_angle", thedeg)
         np.save("extRatio", extRatio)
         np.save("residuals", residuals)
-
         np.save("a", a)
         np.save("b", b)
         np.save("c", c)
@@ -646,9 +620,9 @@ class imagingpolarimeter:
             im = Image.fromarray(np.uint16(np.around(residuals)), mode='I;16')
             im.save("16bit/residuals.tiff", "TIFF")
 
-        print("done")
-        print('One parabola fitting took {:.6f} ms'.format(theTime*1000/theCount))
-        print(str(theCount) + ' parabolas has been fitted')
+        #print('One parabola fitting took {:.6f} ms'.format(theTime*1000/theCount))
+        print(' The fitting took {:.2f} s'.format(theTime))
+        #print(str(theCount) + ' parabolas has been fitted')
 
 
 
